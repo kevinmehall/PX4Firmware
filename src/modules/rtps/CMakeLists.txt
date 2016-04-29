@@ -33,6 +33,8 @@
 
 set(COMMKIT_DIST $ENV{COMMKIT_DIST})
 
+include("./schema/schema.cmake")
+
 px4_add_module(
 	MODULE modules__rtps
 	MAIN rtps
@@ -40,9 +42,10 @@ px4_add_module(
 	COMPILE_FLAGS
 		${MODULE_CFLAGS}
 		-I ${COMMKIT_DIST}/include
-		-I ${COMMKIT_DIST}/../../src/proto
+		-I ${SCHEMA_INCLUDE}
 	SRCS
 		rtps.cpp
+		${SCHEMA_CPP}
 	DEPENDS
 		platforms__common
 	LIBRARIES

@@ -48,7 +48,8 @@
 
 #include <uORB/uORB.h>
 #include <uORB/topics/sensor_gyro.h>
-#include <demo.capnp.h>
+#include <uORB/topics/optical_flow.h>
+#include <redrider.capnp.h>
 
 #include <commkit/node.h>
 #include <commkit/subscriber.h>
@@ -56,13 +57,109 @@
 static volatile bool keep_running;
 static volatile bool started = false;
 
-static void onOpticalFlowMessage(commkit::SubscriberPtr sub) {
+struct ORB_ToRTPS_Base {
+  commkit::PublisherPtr publisher;
+  const orb_metadata* orb_id;
+  int orb_fd;
+  
+  virtual void poll_matched() {}
+  
+  virtual ~ORB_ToRTPS_Base() {}
+};
+
+template<typename CapnType, typename orb_type>
+struct ORB_ToRTPS: ORB_ToRTPS_Base {
+  ORB_ToRTPS(commkit::Node& node, const char* rtps_topic, bool reliable, const orb_metadata* orb) {
+    auto topic = commkit::Topic::capn<CapnType>(rtps_topic);
+    commkit::PublicationOpts pub_opts;
+    pub_opts.reliable = reliable;
+    pub_opts.history = 0;
+    
+    publisher = node.createPublisher(topic);
+    if (publisher == nullptr) {
+        warnx("Error creating publisher for %s\n", rtps_topic);
+        return;
+    }
+    if (!publisher->init(pub_opts)) {
+        warnx("Error initializing publisher for %s\n", rtps_topic);
+        return;
+    }
+    
+    orb_id = orb;
+    orb_fd = orb_subscribe(orb);
+  }
+  
+  void poll_matched() {
+    orb_type data;
+    orb_copy(orb_id, orb_fd, &data);
+    on_orb(data);
+  }
+  
+  virtual void on_orb(orb_type&) {}
+};
+
+struct ORB_FromRTPS_Base {
+  commkit::SubscriberPtr subscriber;
+  const orb_metadata* orb_id;
+  
+  virtual ~ORB_FromRTPS_Base() {}
+};
+
+template<typename CapnType, typename orb_type>
+struct ORB_FromRTPS: ORB_FromRTPS_Base {
+  ORB_FromRTPS(commkit::Node& node, const char* rtps_topic, bool reliable, const orb_metadata* orb) {
+    auto topic = commkit::Topic::capn<CapnType>(rtps_topic);
+    commkit::SubscriptionOpts sub_opts;
+    sub_opts.reliable = reliable;
+    sub_opts.history = 0;
+    
+    subscriber = node.createSubscriber(topic);
+    if (subscriber == nullptr) {
+        warnx("Error creating subscriber for %s\n", rtps_topic);
+        return;
+    }
+    subscriber->onMessage.connect(&ORB_FromRTPS::rtps_recv, this);
+    if (!subscriber->init(sub_opts)) {
+        warnx("Error initializing subscriber for %s\n", rtps_topic);
+        return;
+    }
+    
+    orb_id = orb;
+  }
+  
+  virtual void on_rtps(typename CapnType::Reader) {}
+  
+  void rtps_recv(commkit::SubscriberPtr sub) {
     commkit::Payload payload;
     while (sub->take(&payload)) {
-      auto mytype = payload.toReader<OpticalFlow>();
-      printf("optflow: %f\n", (double) mytype.getFlowX());
+      auto capn = payload.toReader<CapnType>();
+      on_rtps(capn);
     }
-}
+  }
+};
+
+struct OpticalFlow_FromRTPS: ORB_FromRTPS<redrider::OpticalFlow, optical_flow_s> {
+  OpticalFlow_FromRTPS(commkit::Node& node): ORB_FromRTPS(node, "OpticalFlow", false, ORB_ID(optical_flow)) {}
+  
+  void on_rtps(redrider::OpticalFlow::Reader reader) {
+    printf("optflow: %f\n", (double) reader.getFlow().getX());
+  }
+};
+
+struct Gyro_ToRTPS: ORB_ToRTPS<redrider::Gyro, sensor_gyro_s> {
+  Gyro_ToRTPS(commkit::Node& node): ORB_ToRTPS(node, "Gyro", false, ORB_ID(sensor_gyro)) {}
+  
+  void on_orb(sensor_gyro_s& gyro) {
+    capnp::MallocMessageBuilder mb;
+    auto p_gyro = mb.getRoot<redrider::Gyro>();
+    p_gyro.setTimestamp(gyro.timestamp);
+    p_gyro.getIntegral().setX(gyro.x_integral);
+    p_gyro.getIntegral().setY(gyro.y_integral);
+    p_gyro.getIntegral().setZ(gyro.x_integral);
+    p_gyro.setIntegralDt(gyro.integral_dt);
+    publisher->publish(mb);
+  }
+};
 
 static int thread_main() {
   commkit::Node node;
@@ -71,60 +168,31 @@ static int thread_main() {
       return 1;
   }
   
-  commkit::SubscriptionOpts sub_opts;
-  sub_opts.reliable = false;
-  sub_opts.history = false;
-  
-  commkit::PublicationOpts pub_opts;
-  pub_opts.reliable = false;
-  pub_opts.history = false;
-
-  commkit::Topic optical_flow_topic("OpticalFlow", "capnp+OpticalFlow", 512);
-  auto optical_flow_sub = node.createSubscriber(optical_flow_topic);
-  if (optical_flow_sub == nullptr) {
-      warnx("error\n");
-      return 1;
-  }
-  optical_flow_sub->onMessage.connect(&onOpticalFlowMessage);
-  if (!optical_flow_sub->init(sub_opts)) {
-      warnx("error\n");
-      return 1;
-  }
-  
-  commkit::Topic gyro_topic("Gyro", "capnp+Gyro", 512);
-  auto gyro_pub = node.createPublisher(gyro_topic);
-  if (gyro_pub == nullptr) {
-      printf("error\n");
-      return 1;
-  }
-  if (!gyro_pub->init(pub_opts)) {
-      printf("error\n");
-      exit(1);
-  }
-  
-
-  int gyro_sub_fd = orb_subscribe(ORB_ID(sensor_gyro));
-  /* one could wait for multiple topics with this technique, just using one here */
-  px4_pollfd_struct_t fds[] = {
-      { .fd = gyro_sub_fd,   .events = POLLIN },
+  std::unique_ptr<ORB_ToRTPS_Base> to_rtps[] = {
+    std::unique_ptr<ORB_ToRTPS_Base>(new Gyro_ToRTPS(node)),
   };
-
+  
+  std::unique_ptr<ORB_FromRTPS_Base> from_rtps[] = {
+    std::unique_ptr<ORB_FromRTPS_Base>(new OpticalFlow_FromRTPS(node)),
+  };
+  
+  const size_t to_rtps_count = sizeof(to_rtps) / sizeof(to_rtps[0]);
+  px4_pollfd_struct_t fds[to_rtps_count];
+  
+  for (size_t i = 0; i<to_rtps_count; i++) {
+    fds[i] = { .fd = to_rtps[i]->orb_fd, .events = POLLIN };
+  }
+  
   while (keep_running) {
     px4_poll(fds, 1, 1000);
-    if (fds[0].revents & POLLIN) {
-        struct sensor_gyro_s gyro;
-        orb_copy(ORB_ID(sensor_gyro), gyro_sub_fd, &gyro);
-        
-        capnp::MallocMessageBuilder mb;
-        auto p_gyro = mb.getRoot<Gyro>();
-        p_gyro.setTimestamp(gyro.timestamp);
-        p_gyro.setXIntegral(gyro.x_integral);
-        p_gyro.setYIntegral(gyro.y_integral);
-        p_gyro.setZIntegral(gyro.x_integral);
-        p_gyro.setIntegralDt(gyro.integral_dt);
-        gyro_pub->publish(mb);
+    for (size_t i = 0; i<to_rtps_count; i++) {
+      if (fds[i].revents & POLLIN) {
+        to_rtps[i]->poll_matched();
+      }
     }
   }
+  
+  (void) from_rtps;
 
   started = false;
   return OK;
