@@ -35,6 +35,21 @@ set(COMMKIT_DIST $ENV{COMMKIT_DIST})
 
 include("./schema/schema.cmake")
 
+find_library(LIBCOMMKIT commkit PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBCAPNP capnp PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+
+#TODO: these should use -rpath-link
+find_library(LIBFASTRTPS fastrtps PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_THREAD boost_thread PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_SYSTEM boost_system PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_DATE_TIME boost_date_time PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_CHRONO boost_chrono PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_REGEX boost_regex PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_library(LIBBOOST_ATOMIC boost_atomic PATHS "${COMMKIT_DIST}/lib/" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+	
+message("COMMKIT_DIST: '${COMMKIT_DIST}/lib'")
+message("COMMKIT: " ${LIBCOMMKIT})
+
 px4_add_module(
 	MODULE modules__rtps
 	MAIN rtps
@@ -49,8 +64,15 @@ px4_add_module(
 	DEPENDS
 		platforms__common
 	LIBRARIES
-		capnp
-		${COMMKIT_DIST}/lib/libcommkit.dylib
+		${LIBCAPNP}
+		${LIBCOMMKIT}
+		${LIBFASTRTPS}
+		${LIBBOOST_THREAD}
+		${LIBBOOST_SYSTEM}
+		${LIBBOOST_DATE_TIME}
+		${LIBBOOST_CHRONO}
+		${LIBBOOST_REGEX}
+		${LIBBOOST_ATOMIC}
 	)
 
 # vim: set noet ft=cmake fenc=utf-8 ff=unix :
