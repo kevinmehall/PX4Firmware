@@ -221,7 +221,7 @@ struct Gyro_ToRTPS: ORB_ToRTPS<redrider::Gyro, sensor_gyro_s> {
   void on_orb(sensor_gyro_s& gyro) {
     capnp::MallocMessageBuilder mb;
     auto p_gyro = mb.getRoot<redrider::Gyro>();
-    p_gyro.setTimestamp(gyro.timestamp);
+    p_gyro.setTimestamp(gyro.timestamp * 1000);
     p_gyro.getIntegral().setX(gyro.x_integral);
     p_gyro.getIntegral().setY(gyro.y_integral);
     p_gyro.getIntegral().setZ(gyro.x_integral);
